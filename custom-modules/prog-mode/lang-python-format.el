@@ -41,55 +41,50 @@ point and avoiding full reformatting."
   (apheleia-format-buffer 'ruff-isort))
 
 (defun my-lang-python/format-buffer ()
-  "Format the entire buffer using ruff-format via Apheleia.
+  "Format the entire buffer using ruff via Apheleia.
 This applies Ruff's code style formatter, preserving point."
   (interactive)
   (unless (derived-mode-p 'python-ts-mode 'python-mode)
     (user-error "Not in a Python mode"))
-  (apheleia-format-buffer 'ruff-format)
-  (my-in-buffer-tools/comment-align-buffer (point-min) (point-max)))
+  (apheleia-format-buffer
+   '(ruff-isort ruff)
+   (lambda ()
+     (my-in-buffer-tools/comment-align-buffer (point-min) (point-max))))
+  )
 
-(defun my-lang-python/format-region ()
-  "Format active Python region with full Apheleia chain + align, via temp-buffer.
-Copies region to temp-buffer, runs buffer format (isort + format + align),
-then replaces original region.  Skips on hard syntax/runtime error; proceeds on lint."
-  (interactive)
-  (if (not (use-region-p))
-      (error "No region active; use `my-lang-python/format-buffer' for whole buffer")
-    (let* ((start (region-beginning))
-           (end (region-end))
-           (orig-content (buffer-substring-no-properties start end))            ; Save original.
-           (temp-buffer (generate-new-buffer " *python-region-format*" t))
-           (check-ok t))
-      (unwind-protect
-          (with-current-buffer temp-buffer
-            (python-ts-mode)                                                    ; Set mode for Apheleia/align.
-            (insert orig-content)                                               ; Region as "whole" buffer.
-            ;; Pre-check syntax/lint (plain check).
-            (let* ((temp-file (make-temp-file "python-region-" nil ".py"))
-                   (check-buffer (generate-new-buffer " *ruff-check*" t)))
-              (unwind-protect
-                  (progn
-                    (write-region (point-min) (point-max) temp-file nil 'silent)
-                    (with-current-buffer check-buffer
-                      (let ((check-code (call-process "ruff" nil t t "check" temp-file)))
-                        (cond
-                         ((= check-code 0) (message "No issues; proceeding."))
-                         ((= check-code 1) (message "Lint violations; still formatting: %s" (buffer-string))) ; Proceed on lint.
-                         (t (setq check-ok nil)
-                            (message "Hard error (code %d); skipping format: %s" check-code (buffer-string)))))))
-                (when (file-exists-p temp-file) (delete-file temp-file))
-                (kill-buffer check-buffer)))
-            ;; Format + align if check ok (or lint-only).
-            (when check-ok
-              (my-lang-python/format-buffer))                                   ; Full chain on temp.
-            ;; Fallback align if skipped.
-            (unless check-ok
-              (my-in-buffer-tools/comment-align-buffer (point-min) (point-max))))
-        ;; Now back in original buffer: Replace region with formatted content.
-        (delete-region start end)
-        (insert (with-current-buffer temp-buffer (buffer-string)))
-        (kill-buffer temp-buffer)))))
+(defun my-lang-python/format-region (START END)
+  "Format the active region with `ruff format --range'.
+START and END are the region bounds.  Uses the whole buffer as
+context so the snippet does not have to be a valid module."
+  (interactive "r")
+  (unless (derived-mode-p 'python-ts-mode 'python-mode)
+    (user-error "Not in a Python mode"))
+  (unless (use-region-p)
+    (user-error "No region active; use `my-lang-python/format-buffer'"))
+  (let* ((range (format "%d:%d-%d:%d"
+                        (line-number-at-pos START t)
+                        (1+ (save-excursion (goto-char START) (current-column)))
+                        (line-number-at-pos END t)
+                        (1+ (save-excursion (goto-char END) (current-column)))))
+         (file (or buffer-file-name "region.py"))
+         (out (get-buffer-create " *ruff-format-region*")))
+    (unwind-protect
+        (let ((code (apply #'call-process-region
+                           (point-min) (point-max)
+                           "ruff" nil out nil
+                           "format" "--silent"
+                           "--stdin-filename" file
+                           "--range" range
+                           "-")))
+          (if (eq code 0)
+              (let ((formatted (with-current-buffer out (buffer-string))))
+                (replace-buffer-contents out)
+                (when (fboundp 'my-in-buffer-tools/comment-align-buffer)
+                  (my-in-buffer-tools/comment-align-buffer START END)))
+            (user-error "ruff format --range failed (%s): %s"
+                        code
+                        (with-current-buffer out (buffer-string)))))
+      (kill-buffer out))))
 
 (defun my-lang-python/align-comments-before-save ()
   "Align existing inline comments before save, if in Python mode.
@@ -102,16 +97,13 @@ Operates on the whole buffer to match Apheleia's scope.  Runs after formatting."
 (defun my-lang-python/format-setup ()
   "Enable Apheleia and buffer-local format-on-save for `python-ts-mode'.
 Do not call this at `require'; the loader hook invokes it."
+  (require 'apheleia)
   (apheleia-mode 1)
-  ;; Define a ruff-format formatter
-  ;; (for full Ruff formatting without isort).
-  ;; This runs 'ruff format' to reformat code style.
-  (setf (alist-get 'ruff-format apheleia-formatters)
-        '("ruff" "format" "--quiet" "--stdin-filename" filepath "-"))
-  ;; Define ruff-isort as custom formatter (matches Apheleia built-in).
-  (setf (alist-get 'ruff-isort apheleia-formatters)
-        '("ruff" "check" "--select=I" "--fix" "--quiet" "--stdin-filename" filepath "-"))
-  (add-hook 'before-save-hook #'my-lang-python/align-comments-before-save nil t))
+  ;; Stock Apheleia names: ruff = `ruff format --silent`, ruff-isort = I-rules fix.
+  (setf (alist-get 'python-ts-mode apheleia-mode-alist) '(ruff-isort ruff))
+  (setf (alist-get 'python-mode    apheleia-mode-alist) '(ruff-isort ruff))
+  (add-hook 'before-save-hook
+            #'my-lang-python/align-comments-before-save nil t))
 
 (log/debug :fn 'lang-python-format
            :msg "Finishing load of the lang-python-format module."
