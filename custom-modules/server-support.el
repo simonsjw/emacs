@@ -19,6 +19,13 @@
 ;;   Keymaps:    none
 ;;   Docs:       docs/server-support.org
 ;;   OS:         emacs-daemon-wrapper
+;;
+;; | Action                         | Effect with one client frame                                                        |
+;; ------------------------------------------------------------------------------------------------------------------------
+;; | Window-manager close / C-x 5 0 | Deletes that frame; daemon stays up                                                 |
+;; | C-x C-c                        | Deletes that client frame; daemon stays up                                          |
+;; | C-x #                          | Marks the server buffer done; may delete the client frame if this client is waiting |
+;; | M-x kill-emacs                 | Stops the daemon                                                                    |
 
 ;;; Code:
 
@@ -50,39 +57,50 @@ warnings in systemd user units pre-2024."
 ;; ----------------------------------------------------------------------
 ;; 2. Simple client frame creator (clean, no face resets)
 ;; ----------------------------------------------------------------------
+(defun my-server/simple-client-frame-p (frame)
+  "Return non-nil if FRAME is a graphical non-IDE frame."
+  (and (frame-live-p frame)
+       (display-graphic-p frame)
+       (not (eq (frame-parameter frame 'UI-TYPE) 'IDE))))
+
 (defun my-server/display-simple-frame (buffer)
-  "Display BUFFER in a new, simple, single-window frame.
-No IDE tagging, no category routing, no residual previous buffers."
-  (let* ((frame-params `((UI-TYPE . nil)
-                         (custom-window-management . nil)
-                         (name . "Simple Client Frame")
-                         (width . 120)
-                         (height . 40)))
-         (frame (make-frame frame-params))
-         (win   (frame-selected-window frame)))
-    (select-frame frame)
-    ;; Force the requested buffer and erase history so the previous file cannot reappear
+  "Display BUFFER in a simple, single-window client frame.
+
+Reuse the frame `emacsclient -c' already created.  Only call
+`make-frame' when the selected frame is an IDE frame or is not
+graphical, so a second client invocation cannot inherit the IDE
+layout."
+  (let* ((reuse (and (my-server/simple-client-frame-p (selected-frame))
+                     (selected-frame)))
+         (frame (or reuse
+                    (make-frame '((UI-TYPE . nil)
+                                  (custom-window-management . nil)
+                                  (name . "Simple Client Frame")
+                                  (width . 120)
+                                  (height . 40)))))
+         (win (frame-selected-window frame)))
+    (select-frame-set-input-focus frame)
+    (set-frame-parameter frame 'UI-TYPE nil)
+    (set-frame-parameter frame 'custom-window-management nil)
+    (set-frame-parameter frame 'name "Simple Client Frame")
     (set-window-buffer win buffer)
     (set-window-prev-buffers win nil)
     (set-window-next-buffers win nil)
     (delete-other-windows win)
-
-    ;; Visuals only – never layout.  Protect against errors so the client frame stays alive.
     (condition-case err
-        (my-visual/apply-all-customisations)   ; ideally a faces/fringes/icons-only path when UI-TYPE is nil
+        (my-visual/apply-all-customisations)
       (error
        (log/error :fn 'my-server/display-simple-frame
                   :msg "Visual apply failed (non-fatal)."
                   :obj err)))
-
-    ;; Re-assert single window *after* the hook may have run
     (delete-other-windows)
     (set-window-buffer (selected-window) buffer)
-
     (log/info :fn 'my-server/display-simple-frame
-              :msg "Simple client frame created."
+              :msg (if reuse
+                       "Reused existing client frame."
+                     "Created simple client frame.")
               :obj (buffer-name buffer))
-    (selected-window)))   ; return the window, not the frame
+    (selected-window)))
 
 ;; Wire it in — this is what makes `emacsclient -c` use the simple frame
 (setq server-window #'my-server/display-simple-frame)
