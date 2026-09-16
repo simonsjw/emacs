@@ -67,23 +67,30 @@ context so the snippet does not have to be a valid module."
                         (line-number-at-pos END t)
                         (1+ (save-excursion (goto-char END) (current-column)))))
          (file (or buffer-file-name "region.py"))
+         (with-current-buffer out (erase-buffer))
          (out (get-buffer-create " *ruff-format-region*")))
     (unwind-protect
-        (let ((code (apply #'call-process-region
-                           (point-min) (point-max)
-                           "ruff" nil out nil
-                           "format" "--silent"
-                           "--stdin-filename" file
-                           "--range" range
-                           "-")))
+        (let (
+              (code
+               (apply #'call-process-region
+                      (point-min) (point-max)
+                      "ruff" nil out nil
+                      (list "format" "--silent"
+                            "--stdin-filename" file
+                            "--range" range
+                            "-")
+                      )
+               )
+              )
           (if (eq code 0)
-              (let ((formatted (with-current-buffer out (buffer-string))))
+              (progn
                 (replace-buffer-contents out)
                 (when (fboundp 'my-in-buffer-tools/comment-align-buffer)
                   (my-in-buffer-tools/comment-align-buffer START END)))
             (user-error "ruff format --range failed (%s): %s"
                         code
-                        (with-current-buffer out (buffer-string)))))
+                        (with-current-buffer out (buffer-string))))
+          )
       (kill-buffer out))))
 
 (defun my-lang-python/align-comments-before-save ()
