@@ -42,7 +42,6 @@ etc/INFODYNAMICS/lang-servers/*/**
 
 # Package managers & their state
 elpa/
-emacs-wiki/
 **/eln-cache/
 **/elpa/
 **/straight/
